@@ -1646,6 +1646,113 @@ Tool definitions generated from command schemas (like figma-use's `mcp-tools.jso
 | mcp | @modelcontextprotocol/sdk | @open-pencil/core, @open-pencil/cli |
 | app | — | vue, reka-ui, tailwindcss, @tauri-apps/*, @open-pencil/core |
 
+### Types & shared code
+
+The linter, CLI, MCP, and app all need the same node/document types. These live in `@open-pencil/core` — it's the single source of truth:
+
+```
+@open-pencil/core exports:
+  types.ts          — GUID, Color, Vector, Matrix, Rect (primitives)
+  scene-graph.ts    — SceneNode, SceneGraph, NodeType, Fill, Stroke, Effect,
+                      LayoutMode, LayoutSizing, VectorNetwork, etc.
+  layout.ts         — computeLayout, computeAllLayouts
+  renderer.ts       — SkiaRenderer, RenderOverlays
+  color.ts          — parseColor, colorToHex, etc.
+  fonts.ts          — loadFont, listFamilies (browser + fs paths)
+  vector.ts         — vectorNetworkToPath, encode/decode blobs
+  snap.ts           — computeSelectionBounds, computeSnap, SnapGuide
+  undo.ts           — UndoManager
+  clipboard.ts      — parse/build clipboard HTML
+  fig-export.ts     — exportFigFile
+  kiwi/             — codec, fig-import, fig-file, schema, protocol
+```
+
+The linter doesn't define its own `FigmaNode` — it works directly with `SceneNode` from core. No adapter layer, no duplication.
+
+The JSON-RPC protocol types (for the WS bridge between CLI↔app) live in a shared file within `@open-pencil/core`:
+
+```ts
+// core/src/rpc.ts
+interface RpcRequest {
+  jsonrpc: '2.0'
+  id: number
+  method: string
+  params?: Record<string, unknown>
+}
+
+interface RpcResponse {
+  jsonrpc: '2.0'
+  id: number
+  result?: unknown
+  error?: { code: number; message: string }
+}
+
+type RpcMethod =
+  | 'eval'
+  | 'screenshot'
+  | 'getNode'
+  | 'getTree'
+  | 'createNode'
+  | 'updateNode'
+  | 'deleteNode'
+  | 'select'
+  | 'find'
+  | ... 
+```
+
+Both the app's WS server and the CLI's WS client import these types from `@open-pencil/core`.
+
+### Tests
+
+Tests live alongside the package they test. Each package has its own `tests/` dir:
+
+```
+packages/
+  core/
+    tests/
+      scene-graph.test.ts    — ← existing tests/engine/scene-graph.test.ts (76 tests)
+      layout.test.ts         — ← existing tests/engine/layout.test.ts
+      fig-import.test.ts     — ← existing tests/engine/fig-import.test.ts
+      renderer.test.ts       — NEW: headless render → PNG, compare snapshots
+      fig-roundtrip.test.ts  — NEW: import .fig → export .fig → reimport, verify lossless
+  linter/
+    tests/
+      linter.test.ts         — rule execution, preset loading, report format
+      rules/                 — one test file per rule (same pattern as figma-use)
+  cli/
+    tests/
+      headless.test.ts       — load .fig file headless, verify scene graph
+      commands.test.ts       — CLI command integration tests (invoke via subprocess)
+  app/
+    tests/
+      e2e/                   — ← existing Playwright tests (create-shapes, layers-panel)
+      helpers/               — ← existing CanvasHelper
+```
+
+All unit tests run with `bun test`. No Playwright, no browser needed. The test commands:
+
+```
+bun test                        — all unit tests across all packages
+bun test packages/core          — core only
+bun test packages/linter        — linter only
+bun test packages/cli           — CLI only
+bun test --project openpencil   — Playwright e2e (app must be running)
+```
+
+New test categories to add:
+
+| Category | Package | What it validates |
+|----------|---------|-------------------|
+| Headless render | core | `MakeSurface` → render scene → PNG snapshot matches expected |
+| Fig roundtrip | core | .fig import → export → reimport produces identical scene graph |
+| Linter rules | linter | Each rule produces expected messages on crafted test nodes |
+| Linter presets | linter | Preset loads correct rule set, severity overrides work |
+| CLI integration | cli | `open-pencil lint test.fig` exits 0/1, outputs expected format |
+| CLI headless render | cli | `open-pencil export test.fig --format png` produces valid PNG |
+| Visual diff | cli | `open-pencil diff a.fig b.fig` detects pixel differences |
+
+Snapshot tests for rendering: store expected PNGs in `packages/core/tests/snapshots/`. Use pixel-level comparison (allow small tolerance for anti-aliasing across platforms). CanvasKit CPU rasterizer is deterministic on the same platform, so CI snapshots only need per-platform baselines.
+
 ### Risks — validated
 
 All three risks have been tested and eliminated:
